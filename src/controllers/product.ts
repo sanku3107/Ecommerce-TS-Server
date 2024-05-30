@@ -7,10 +7,11 @@ import {
 } from "../types/types.js";
 import { Product } from "../models/product.js";
 import ErrorHandler from "../utils/utility-class.js";
-import { rm } from "fs";
+import fs from "fs";
 import { myCache } from "../app.js";
 import { json } from "stream/consumers";
 import { invalidateCache } from "../utils/features.js";
+import cloudinary from "cloudinary";
 // import {faker} from "@faker-js/faker";
 
 //get latest products
@@ -89,49 +90,72 @@ export const createProduct = TryCatch(
   async (req: Request<{}, {}, newProductRequestBody>, res, next) => {
     const { name, price, stock, category } = req.body;
 
-    const photo = req.file;
+    const photo = req.file?.path;
     if (!photo) {
       return next(new ErrorHandler("Please add photo", 400));
     }
+
+    const myCloud = await cloudinary.v2.uploader.upload(photo);
+
     if (!name || !price || !stock || !category) {
-      rm(photo.path, () => {
-        console.log("deleted");
-      });
+      fs.unlinkSync(photo);
       return next(new ErrorHandler("Please add all fields", 400));
     }
-    await Product.create({
-      name,
-      price,
-      stock,
-      category: category.toLowerCase(),
-      photo: photo.path,
-    });
 
-    invalidateCache({ product: true, admin: true });
+    try {
+      await Product.create({
+        name,
+        price,
+        stock,
+        category: category.toLowerCase(),
+        photo: myCloud.secure_url,
+      });
 
-    return res.status(201).json({
-      success: true,
-      message: "product created successfully",
-    });
+      // File deletion should happen after the product is successfully created
+      fs.unlinkSync(photo);
+
+      invalidateCache({ product: true, admin: true });
+
+      return res.status(201).json({
+        success: true,
+        message: "Product created successfully",
+      });
+    } catch (error) {
+      // Clean up the uploaded file if there was an error creating the product
+      fs.unlinkSync(photo);
+      return next(error);
+    }
   }
 );
 
 //update product
-export const updateProduct = TryCatch(async (req, res, next) => {
+export const updateProduct = TryCatch(async (req: Request, res, next) => {
   const { id } = req.params;
   const { name, price, stock, category } = req.body;
-  const photo = req.file;
+  const file = req.file?.path;
+  
   const product = await Product.findById(id);
 
   if (!product) {
     return next(new ErrorHandler("Product not found", 404));
   }
 
-  if (photo) {
-    rm(product.photo!, () => {
-      console.log("old photo deleted");
-    });
-    product.photo = photo.path;
+  if (file) {
+    // Upload new photo to Cloudinary
+    const myCloud = await cloudinary.v2.uploader.upload(file);
+
+    // Delete the old photo file
+    fs.unlinkSync(file);
+
+    // If the product has an existing photo, delete it from Cloudinary
+    if (product.photo) {
+      const publicId = extractPublicIdFromUrl(product.photo);
+      if (publicId) {
+        await cloudinary.v2.uploader.destroy(publicId);
+      }
+    }
+
+    product.photo = myCloud.secure_url;
   }
 
   if (name) {
@@ -144,19 +168,27 @@ export const updateProduct = TryCatch(async (req, res, next) => {
     product.stock = stock;
   }
   if (category) {
-    product.category = category;
+    product.category = category.toLowerCase();
   }
+  
   await product.save();
+  
   invalidateCache({
     product: true,
     productId: String(product._id),
     admin: true,
   });
+
   return res.status(200).json({
     success: true,
-    message: "product updated successfully",
+    message: "Product updated successfully",
   });
 });
+
+const extractPublicIdFromUrl = (url: string): string | null => {
+  const match = /\/v\d+\/(.+)\.[a-z]+$/.exec(url);
+  return match ? match[1] : null;
+};
 
 //delete product
 export const deleteProduct = TryCatch(async (req, res, next) => {
@@ -165,9 +197,12 @@ export const deleteProduct = TryCatch(async (req, res, next) => {
   if (!product) {
     return next(new ErrorHandler("Product not found", 404));
   }
-  rm(product.photo!, () => {
-    console.log("Product photo deleted");
-  });
+  if (product.photo) {
+    const publicId = extractPublicIdFromUrl(product.photo);
+    if (publicId) {
+      await cloudinary.v2.uploader.destroy(publicId);
+    }
+  }
   await product.deleteOne();
   invalidateCache({
     product: true,

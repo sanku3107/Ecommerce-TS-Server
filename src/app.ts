@@ -5,6 +5,7 @@ import NodeCache from "node-cache";
 import { config } from "dotenv";
 import morgan from "morgan";
 import cors from "cors";
+import { v2 as cloudinary } from 'cloudinary';
 
 //importing routes
 import userRoute from "./routes/user.js";
@@ -20,6 +21,13 @@ config({
 const port = process.env.PORT || 3000;
 const mongoURI = process.env.MONGO_URI || "";
 const stripeKey = process.env.STRIPE_KEY || "";
+
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 connectDB(mongoURI);
 
@@ -43,7 +51,7 @@ app.use("/api/v1/payment", paymentRoute);
 app.use("/api/v1/dashboard", statsRoute);
 
 //we can check the images in the browser by this line as it creates the uploads as static
-app.use("/uploads", express.static("uploads"));
+// app.use("/uploads", express.static("uploads"));
 
 app.use(errorMiddleware);
 
